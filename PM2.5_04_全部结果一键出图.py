@@ -196,18 +196,12 @@ def load_base_layers():
     return gdf_study_area, merged_dem.x.values, merged_dem.y.values, merged_dem.values[0]
 
 
-def format_pm25_tick(value):
-    if abs(value - round(value)) < 1e-6:
-        return f'{int(round(value))}'
-    return f'{value:.1f}'.rstrip('0').rstrip('.')
-
-
 def get_pm25_norm(pm25_values):
     valid_values = np.array([float(v) for v in pm25_values if pd.notna(v)], dtype=float)
     valid_values = valid_values[np.isfinite(valid_values)]
 
     if valid_values.size == 0:
-        pm25_levels = np.linspace(0, 150, 6)
+        lower, upper = 0, 150
     else:
         min_value = float(np.min(valid_values))
         max_value = float(np.max(valid_values))
@@ -220,15 +214,17 @@ def get_pm25_norm(pm25_values):
             lower = max(0, min_value)
             upper = max_value
 
-        lower = np.floor(lower)
-        upper = np.ceil(upper)
-        if np.isclose(lower, upper):
-            upper = lower + 1
+        lower = max(0, int(np.floor(lower)))
+        upper = int(np.ceil(upper))
 
-        pm25_levels = np.linspace(lower, upper, 6)
+    if upper <= lower:
+        upper = lower + 1
+
+    step = max(1, int(np.ceil((upper - lower) / 5)))
+    pm25_levels = np.array([lower + step * i for i in range(6)], dtype=int)
 
     pm25_norm = mcolors.BoundaryNorm(pm25_levels, pm25_cmap.N, clip=True)
-    pm25_tick_labels = [format_pm25_tick(value) for value in pm25_levels]
+    pm25_tick_labels = [str(int(value)) for value in pm25_levels]
     return pm25_norm, pm25_levels, pm25_tick_labels
 
 
