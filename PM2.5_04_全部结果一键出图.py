@@ -196,13 +196,40 @@ def load_base_layers():
     return gdf_study_area, merged_dem.x.values, merged_dem.y.values, merged_dem.values[0]
 
 
-def get_pm25_norm(values_by_station):
-    valid_values = [float(v) for v in values_by_station.values() if pd.notna(v)]
-    max_value = max(valid_values) if valid_values else 150
-    vmax_cbar = max(160, int(np.ceil(max_value)))
-    pm25_levels = [0, 35, 75, 115, 150, vmax_cbar]
+def format_pm25_tick(value):
+    if abs(value - round(value)) < 1e-6:
+        return f'{int(round(value))}'
+    return f'{value:.1f}'.rstrip('0').rstrip('.')
+
+
+def get_pm25_norm(pm25_values):
+    valid_values = np.array([float(v) for v in pm25_values if pd.notna(v)], dtype=float)
+    valid_values = valid_values[np.isfinite(valid_values)]
+
+    if valid_values.size == 0:
+        pm25_levels = np.linspace(0, 150, 6)
+    else:
+        min_value = float(np.min(valid_values))
+        max_value = float(np.max(valid_values))
+
+        if np.isclose(min_value, max_value):
+            pad = max(1.0, abs(max_value) * 0.05)
+            lower = max(0, min_value - pad)
+            upper = max_value + pad
+        else:
+            lower = max(0, min_value)
+            upper = max_value
+
+        lower = np.floor(lower)
+        upper = np.ceil(upper)
+        if np.isclose(lower, upper):
+            upper = lower + 1
+
+        pm25_levels = np.linspace(lower, upper, 6)
+
     pm25_norm = mcolors.BoundaryNorm(pm25_levels, pm25_cmap.N, clip=True)
-    return pm25_norm, pm25_levels
+    pm25_tick_labels = [format_pm25_tick(value) for value in pm25_levels]
+    return pm25_norm, pm25_levels, pm25_tick_labels
 
 
 def add_vector_north_arrow(ax, x=0.04, y=0.92, w=0.015, h=0.05):
@@ -244,7 +271,7 @@ def render_pm25_map(values_by_station, base_layers, out_path):
             pm25_vals.append(float(val))
             abbr_names.append(abbr)
 
-    pm25_norm, pm25_levels = get_pm25_norm(values_by_station)
+    pm25_norm, pm25_levels, pm25_tick_labels = get_pm25_norm(pm25_vals)
 
     if pm25_vals:
         ax.scatter(lons, lats, c=pm25_vals, cmap=pm25_cmap, norm=pm25_norm, s=150, edgecolor='white', linewidth=1.2, transform=ccrs.PlateCarree(), zorder=30)
@@ -270,7 +297,7 @@ def render_pm25_map(values_by_station, base_layers, out_path):
     cbar = fig.colorbar(sm, cax=cbar_ax, orientation='horizontal', ticks=pm25_levels)
     cbar.set_label('PM2.5 concentrations (μg·m⁻³)', fontdict=global_font, labelpad=8)
     cbar.ax.tick_params(labelsize=20)
-    cbar.ax.set_xticklabels(['0', '35', '75', '115', '150', '>150'])
+    cbar.ax.set_xticklabels(pm25_tick_labels)
 
     plt.savefig(out_path, dpi=300, bbox_inches='tight', pad_inches=0.1)
     plt.close(fig)
@@ -353,4 +380,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
