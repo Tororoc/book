@@ -2,6 +2,7 @@
 import glob
 import os
 
+import cartopy.crs as ccrs
 import geopandas as gpd
 import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
@@ -11,7 +12,6 @@ import numpy as np
 import pandas as pd
 import rioxarray
 from cartopy.mpl.ticker import LatitudeFormatter, LongitudeFormatter
-import cartopy.crs as ccrs
 from rioxarray.merge import merge_arrays
 
 
@@ -21,14 +21,23 @@ from rioxarray.merge import merge_arrays
 dem_folder = r'D:\Li-作图\dem'
 boundary_shapefile_path = r'D:\Li-作图\乌鲁木齐主城区边界\乌鲁木齐主城区\Urumqi_CityZone.shp'
 excel_folder = r'D:\PM2.5影响分析\乌昌石数据总和'
+output_root = r'D:\PM2.5影响分析\PM25_全部结果一键出图'
 
-# 显示范围：乌鲁木齐局部，保持原代码经纬度范围不变
+station_mean_folder = os.path.join(output_root, '01_站点平均浓度分布图')
+level_daily_folder = os.path.join(output_root, '02_不同等级污染日平均浓度分布图')
+level_hourly_folder = os.path.join(output_root, '03_不同等级污染日逐小时平均浓度分布图')
+
+for folder in [station_mean_folder, level_daily_folder, level_hourly_folder]:
+    os.makedirs(folder, exist_ok=True)
+
+# 显示范围：保持原代码经纬度不变
 extent_small = [87.2, 87.9, 43.65, 44.25]
 
 # 全局字体配置：保持原代码样式
 global_font = {'family': 'Times New Roman', 'size': 20, 'weight': 'normal'}
 plt.rcParams['font.family'] = 'Times New Roman'
 plt.rcParams['axes.unicode_minus'] = False
+
 
 # ==========================================
 # 2. 站点坐标映射：保持原代码缩写和经纬度不变
@@ -71,7 +80,10 @@ pollution_grades = [
     ('Ⅴ', 150, np.inf, '(150,∞]'),
 ]
 
-# DEM 分级与配色：保持原代码间隔和颜色不变
+
+# ==========================================
+# 3. 色带与分级配置：DEM 间隔保持不变
+# ==========================================
 dem_levels = [-100, 0, 250, 500, 750, 1000, 1250, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5100]
 colors_15 = [
     '#2B4EA5', '#1D86E1', '#00ACC9', '#00C66B', '#61E24B',
@@ -91,7 +103,7 @@ def normalize_column_name(col):
         value = float(raw)
         if value.is_integer() and 0 <= int(value) <= 23:
             return f'{int(value):02d}'
-    except ValueError:
+    except (TypeError, ValueError):
         pass
     return raw.zfill(2) if raw.isdigit() else raw
 
@@ -104,11 +116,13 @@ def match_station_name(filename):
     return None
 
 
-def read_pm25_station_data(folder=excel_folder):
-    """读取原始 Excel 格式，返回 {中文站点名: 24小时浓度DataFrame}。"""
+def read_pm25_station_data():
     station_frames = {}
 
-    for path in glob.glob(os.path.join(folder, '*.xlsx')):
+    for path in glob.glob(os.path.join(excel_folder, '*.xlsx')):
+        if os.path.basename(path).startswith('~$'):
+            continue
+
         station_name = match_station_name(path)
         if station_name is None:
             continue
@@ -126,8 +140,7 @@ def read_pm25_station_data(folder=excel_folder):
                 print(f'跳过 {os.path.basename(path)}：缺少小时列 {missing_cols}')
                 continue
 
-            values = df[hour_cols].apply(pd.to_numeric, errors='coerce')
-            values = values.dropna(how='all')
+            values = df[hour_cols].apply(pd.to_numeric, errors='coerce').dropna(how='all')
             if values.empty:
                 continue
 
@@ -153,20 +166,12 @@ def get_grade_mask(daily_mean, lower, upper):
     return (daily_mean > lower) & (daily_mean <= upper)
 
 
-def get_pm25_norm(values_by_station):
-    valid_values = [float(v) for v in values_by_station.values() if pd.notna(v)]
-    max_value = max(valid_values) if valid_values else 150
-    vmax_cbar = max(160, int(np.ceil(max_value)))
-    pm25_levels = [0, 35, 75, 115, 150, vmax_cbar]
-    pm25_norm = mcolors.BoundaryNorm(pm25_levels, pm25_cmap.N, clip=True)
-    return pm25_norm, pm25_levels
-
-
 def load_base_layers():
     print('正在处理边界与 DEM 数据...')
     gdf_boundary = gpd.read_file(boundary_shapefile_path)
     if gdf_boundary.crs and gdf_boundary.crs.to_epsg() != 4326:
         gdf_boundary = gdf_boundary.to_crs(epsg=4326)
+
     gdf_study_area = gdf_boundary.cx[extent_small[0]:extent_small[1], extent_small[2]:extent_small[3]]
 
     datasets = []
@@ -188,12 +193,16 @@ def load_base_layers():
         raise RuntimeError(f'未在 DEM 文件夹中读取到可用 tif：{dem_folder}')
 
     merged_dem = merge_arrays(datasets).where(lambda x: x >= -500).sortby('y', ascending=False)
-    return {
-        'gdf_study_area': gdf_study_area,
-        'lon_dem': merged_dem.x.values,
-        'lat_dem': merged_dem.y.values,
-        'dem_val': merged_dem.values[0],
-    }
+    return gdf_study_area, merged_dem.x.values, merged_dem.y.values, merged_dem.values[0]
+
+
+def get_pm25_norm(values_by_station):
+    valid_values = [float(v) for v in values_by_station.values() if pd.notna(v)]
+    max_value = max(valid_values) if valid_values else 150
+    vmax_cbar = max(160, int(np.ceil(max_value)))
+    pm25_levels = [0, 35, 75, 115, 150, vmax_cbar]
+    pm25_norm = mcolors.BoundaryNorm(pm25_levels, pm25_cmap.N, clip=True)
+    return pm25_norm, pm25_levels
 
 
 def add_vector_north_arrow(ax, x=0.04, y=0.92, w=0.015, h=0.05):
@@ -213,34 +222,16 @@ def add_scale_bar(ax, x0, y0, length_km, y_offset):
 
 
 def render_pm25_map(values_by_station, base_layers, out_path):
+    gdf_study_area, lon_dem, lat_dem, dem_val = base_layers
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(10, 9.5), subplot_kw={'projection': ccrs.PlateCarree()}, dpi=150)
     ax.set_extent(extent_small, crs=ccrs.PlateCarree())
 
-    ax.pcolormesh(
-        base_layers['lon_dem'],
-        base_layers['lat_dem'],
-        base_layers['dem_val'],
-        cmap=dem_cmap,
-        norm=dem_norm,
-        transform=ccrs.PlateCarree(),
-        shading='auto',
-        rasterized=True,
-        alpha=0.9,
-    )
+    ax.pcolormesh(lon_dem, lat_dem, dem_val, cmap=dem_cmap, norm=dem_norm, transform=ccrs.PlateCarree(), shading='auto', rasterized=True, alpha=0.9)
 
-    gdf_study_area = base_layers['gdf_study_area']
     if not gdf_study_area.empty:
-        ax.add_geometries(
-            gdf_study_area.geometry,
-            crs=ccrs.PlateCarree(),
-            facecolor='none',
-            edgecolor='black',
-            linewidth=1.0,
-            zorder=20,
-            alpha=0.8,
-        )
+        ax.add_geometries(gdf_study_area.geometry, crs=ccrs.PlateCarree(), facecolor='none', edgecolor='black', linewidth=1.0, zorder=20, alpha=0.8)
 
     lons, lats, pm25_vals, abbr_names = [], [], [], []
     for cn_name, val in values_by_station.items():
@@ -256,19 +247,7 @@ def render_pm25_map(values_by_station, base_layers, out_path):
     pm25_norm, pm25_levels = get_pm25_norm(values_by_station)
 
     if pm25_vals:
-        ax.scatter(
-            lons,
-            lats,
-            c=pm25_vals,
-            cmap=pm25_cmap,
-            norm=pm25_norm,
-            s=150,
-            edgecolor='white',
-            linewidth=1.2,
-            transform=ccrs.PlateCarree(),
-            zorder=30,
-        )
-
+        ax.scatter(lons, lats, c=pm25_vals, cmap=pm25_cmap, norm=pm25_norm, s=150, edgecolor='white', linewidth=1.2, transform=ccrs.PlateCarree(), zorder=30)
         for x, y, name in zip(lons, lats, abbr_names):
             ax.text(x + 0.005, y + 0.005, name, fontdict=global_font, color='black', transform=ccrs.PlateCarree(), zorder=35)
 
@@ -295,3 +274,83 @@ def render_pm25_map(values_by_station, base_layers, out_path):
 
     plt.savefig(out_path, dpi=300, bbox_inches='tight', pad_inches=0.1)
     plt.close(fig)
+
+
+def calculate_station_mean(station_frames):
+    station_mean = {}
+    for station_name, frame in station_frames.items():
+        value = frame[hour_cols].stack().mean(skipna=True)
+        if pd.notna(value):
+            station_mean[station_name] = value
+    return station_mean
+
+
+def calculate_level_daily_mean(station_frames):
+    level_results = {grade_label: {} for grade_label, _, _, _ in pollution_grades}
+
+    for station_name, frame in station_frames.items():
+        daily_mean = get_daily_mean(frame)
+        for grade_label, lower, upper, _ in pollution_grades:
+            mask = get_grade_mask(daily_mean, lower, upper)
+            value = daily_mean[mask].mean(skipna=True)
+            if pd.notna(value):
+                level_results[grade_label][station_name] = value
+
+    return level_results
+
+
+def calculate_level_hourly_mean(station_frames):
+    level_hourly_results = {
+        grade_label: {hour: {} for hour in hour_cols}
+        for grade_label, _, _, _ in pollution_grades
+    }
+
+    for station_name, frame in station_frames.items():
+        daily_mean = get_daily_mean(frame)
+        for grade_label, lower, upper, _ in pollution_grades:
+            mask = get_grade_mask(daily_mean, lower, upper)
+            if not mask.any():
+                continue
+
+            selected = frame.loc[mask, hour_cols]
+            hourly_mean = selected.mean(axis=0, skipna=True)
+            for hour in hour_cols:
+                value = hourly_mean[hour]
+                if pd.notna(value):
+                    level_hourly_results[grade_label][hour][station_name] = value
+
+    return level_hourly_results
+
+
+def main():
+    print('正在读取并处理 PM2.5 数据...')
+    station_frames = read_pm25_station_data()
+    if not station_frames:
+        raise RuntimeError('未读取到可用 PM2.5 数据，请检查 Excel 文件夹、sheet 名称和 00-23 小时列。')
+
+    station_mean = calculate_station_mean(station_frames)
+    level_daily_results = calculate_level_daily_mean(station_frames)
+    level_hourly_results = calculate_level_hourly_mean(station_frames)
+    base_layers = load_base_layers()
+
+    out_path = os.path.join(station_mean_folder, 'PM25_站点平均浓度分布图.png')
+    render_pm25_map(station_mean, base_layers, out_path)
+    print(f'完成：{out_path}')
+
+    for grade_label, _, _, range_label in pollution_grades:
+        out_path = os.path.join(level_daily_folder, f'PM25_{grade_label}级污染日平均浓度分布图_{range_label}.png')
+        render_pm25_map(level_daily_results[grade_label], base_layers, out_path)
+        print(f'完成：{out_path}')
+
+    for grade_label, _, _, range_label in pollution_grades:
+        grade_folder = os.path.join(level_hourly_folder, f'{grade_label}级_{range_label}')
+        os.makedirs(grade_folder, exist_ok=True)
+        for hour in hour_cols:
+            out_path = os.path.join(grade_folder, f'PM25_{grade_label}级污染日_{hour}时平均浓度分布图.png')
+            render_pm25_map(level_hourly_results[grade_label][hour], base_layers, out_path)
+            print(f'完成：{out_path}')
+
+
+if __name__ == '__main__':
+    main()
+
