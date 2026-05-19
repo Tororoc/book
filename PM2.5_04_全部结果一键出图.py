@@ -196,12 +196,29 @@ def load_base_layers():
     return gdf_study_area, merged_dem.x.values, merged_dem.y.values, merged_dem.values[0]
 
 
-def get_pm25_norm(pm25_values):
+def get_pm25_norm(pm25_values, legend_range=None):
     valid_values = np.array([float(v) for v in pm25_values if pd.notna(v)], dtype=float)
     valid_values = valid_values[np.isfinite(valid_values)]
 
-    if valid_values.size == 0:
+    if legend_range is not None:
+        lower, upper = legend_range
+        lower = max(0, int(np.floor(lower)))
+
+        if np.isfinite(upper):
+            upper = int(np.ceil(upper))
+            if upper <= lower:
+                upper = lower + 1
+            pm25_levels = np.rint(np.linspace(lower, upper, 6)).astype(int)
+        else:
+            max_value = float(np.max(valid_values)) if valid_values.size else lower + 5
+            upper = max(lower + 5, int(np.ceil(max_value)))
+            step = max(1, int(np.ceil((upper - lower) / 5)))
+            pm25_levels = np.array([lower + step * i for i in range(6)], dtype=int)
+    elif valid_values.size == 0:
         lower, upper = 0, 150
+
+        step = max(1, int(np.ceil((upper - lower) / 5)))
+        pm25_levels = np.array([lower + step * i for i in range(6)], dtype=int)
     else:
         min_value = float(np.min(valid_values))
         max_value = float(np.max(valid_values))
@@ -217,11 +234,11 @@ def get_pm25_norm(pm25_values):
         lower = max(0, int(np.floor(lower)))
         upper = int(np.ceil(upper))
 
-    if upper <= lower:
-        upper = lower + 1
+        if upper <= lower:
+            upper = lower + 1
 
-    step = max(1, int(np.ceil((upper - lower) / 5)))
-    pm25_levels = np.array([lower + step * i for i in range(6)], dtype=int)
+        step = max(1, int(np.ceil((upper - lower) / 5)))
+        pm25_levels = np.array([lower + step * i for i in range(6)], dtype=int)
 
     pm25_norm = mcolors.BoundaryNorm(pm25_levels, pm25_cmap.N, clip=True)
     pm25_tick_labels = [str(int(value)) for value in pm25_levels]
@@ -244,7 +261,7 @@ def add_scale_bar(ax, x0, y0, length_km, y_offset):
     ax.text(x0 + deg_len, y0 + y_offset * 1.3, f'{length_km} km', ha='center', va='bottom', fontdict=global_font, transform=ccrs.PlateCarree(), zorder=60)
 
 
-def render_pm25_map(values_by_station, base_layers, out_path):
+def render_pm25_map(values_by_station, base_layers, out_path, legend_range=None):
     gdf_study_area, lon_dem, lat_dem, dem_val = base_layers
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
@@ -267,7 +284,7 @@ def render_pm25_map(values_by_station, base_layers, out_path):
             pm25_vals.append(float(val))
             abbr_names.append(abbr)
 
-    pm25_norm, pm25_levels, pm25_tick_labels = get_pm25_norm(pm25_vals)
+    pm25_norm, pm25_levels, pm25_tick_labels = get_pm25_norm(pm25_vals, legend_range=legend_range)
 
     if pm25_vals:
         ax.scatter(lons, lats, c=pm25_vals, cmap=pm25_cmap, norm=pm25_norm, s=150, edgecolor='white', linewidth=1.2, transform=ccrs.PlateCarree(), zorder=30)
@@ -360,17 +377,17 @@ def main():
     render_pm25_map(station_mean, base_layers, out_path)
     print(f'完成：{out_path}')
 
-    for grade_label, _, _, range_label in pollution_grades:
+    for grade_label, lower, upper, range_label in pollution_grades:
         out_path = os.path.join(level_daily_folder, f'PM25_{grade_label}级污染日平均浓度分布图_{range_label}.png')
-        render_pm25_map(level_daily_results[grade_label], base_layers, out_path)
+        render_pm25_map(level_daily_results[grade_label], base_layers, out_path, legend_range=(lower, upper))
         print(f'完成：{out_path}')
 
-    for grade_label, _, _, range_label in pollution_grades:
+    for grade_label, lower, upper, range_label in pollution_grades:
         grade_folder = os.path.join(level_hourly_folder, f'{grade_label}级_{range_label}')
         os.makedirs(grade_folder, exist_ok=True)
         for hour in hour_cols:
             out_path = os.path.join(grade_folder, f'PM25_{grade_label}级污染日_{hour}时平均浓度分布图.png')
-            render_pm25_map(level_hourly_results[grade_label][hour], base_layers, out_path)
+            render_pm25_map(level_hourly_results[grade_label][hour], base_layers, out_path, legend_range=(lower, upper))
             print(f'完成：{out_path}')
 
 
